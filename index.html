@@ -688,6 +688,20 @@ function exportData(){
   log('Exported data backup',''); save();
   toast('Backup downloaded','ok');
 }
+function startFresh(){
+  if(!confirm('Clear ALL demo/sample data?\n\nThis keeps YOUR account and your configuration (departments, KPI templates, leave types, payroll rules, holidays) but permanently removes all demo employees, payroll, candidates, leave, attendance, documents, assets, etc.\n\nThis cannot be undone. Have you taken a backup?')) return;
+  if(!confirm('Final confirmation — permanently clear all demo data now?')) return;
+  const me=DB.employees.find(e=>e.id===SESSION.empId);
+  const mySalary=DB.salary.find(s=>s.emp===SESSION.empId);
+  DB.employees = me?[me]:[];
+  DB.salary = mySalary?[mySalary]:[];
+  ['candidates','jobs','interviews','onboardTasks','offboardTasks','exitInterviews','attendance','leaveRequests','payrollRuns','payslips','reimbursements','goals','reviews','feedback','courses','courseAssign','certifications','recognitions','surveys','enps','policies','auditLogs','notifications','kpiScorecards','salaryRevisions','documents','timesheets','investmentProofs','salesIncentives','assets']
+    .forEach(k=>{ DB[k]=[]; });
+  DB.leaveBalances = me?DB.leaveTypes.map(t=>({id:uid('lb'),emp:me.id,type:t.id,allocated:t.maxDays,used:0,pending:0})):[];
+  log('Cleared demo data','fresh start'); save();
+  toast('Demo data cleared — you can now add your real team','ok');
+  setTimeout(()=>navigate('employees'),500);
+}
 function importData(){
   const inp=$('#f-import'); if(!inp||!inp.files||!inp.files[0]){toast('Choose a backup file first','err');return;}
   if(!confirm('Restore this backup? It will REPLACE all current data.')) return;
@@ -3217,7 +3231,10 @@ function settingsPane(){
         <div class="form-row"><input type="file" id="f-import" accept="application/json,.json"></div>
         <button class="btn btn-danger" onclick="importData()">Restore from File</button></div>
     </div>
-    <div class="card card-pad" style="margin-top:16px;background:var(--amber-soft)"><b>⚠ Important:</b> <span style="font-size:13px">data lives in this browser only. Take a backup regularly and before clearing browser data. To share live data across people, the system needs a server/database (production setup).</span></div>`;
+    <div class="card card-pad" style="margin-top:16px"><h3 style="margin-bottom:8px;color:var(--red)">🧹 Start Fresh — clear demo data</h3>
+      <p class="muted" style="font-size:13px;margin-bottom:12px">Removes ALL sample data (demo employees, payroll, candidates, leave, attendance, documents, etc.) so you can build with your real team. <b>Keeps your own account</b> and your configuration (departments, KPI templates, leave types, payroll rules, holidays). This cannot be undone — download a backup first.</p>
+      <button class="btn btn-danger" onclick="startFresh()">Clear all demo data</button></div>
+    <div class="card card-pad" style="margin-top:16px;background:var(--amber-soft)"><b>⚠ Tip:</b> <span style="font-size:13px">Download a backup before clearing. In cloud mode your data is shared live with your whole team, so changes here affect everyone.</span></div>`;
   }
   if(setTab==='kpi'){
     if(kpiBuilder) return kpiBuilderHTML();
