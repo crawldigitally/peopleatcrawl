@@ -274,8 +274,17 @@ let _sb=null, _pushTimer=null, _cloudReady=false;
 
 const DB_KEY = 'peoplehub_v1';
 const DEFAULT_PAYROLL_POLICY={statutoryEnabled:false,epfRate:12,epfCap:15000,esiRate:0.75,esiErRate:3.25,esiThreshold:21000,ptAmount:200,lwfAmount:20,
-  shiftStart:'09:00',lateThresholdMin:15,lateGraceMarks:2,latePerMark:50,lateRule:'amount',latesPerLopDay:3,
-  paidLeavesPerMonth:1,halfDayAllowance:1,unplannedLop:true,unplannedPenaltyMultiplier:2,sandwichLeave:true,customRules:[]};
+  shiftStart:'09:00',lateThresholdMin:30,lateGraceMarks:0,latePerMark:50,lateRule:'amount',latesPerLopDay:3,
+  // Attendance timing (Crawl Digitally office rules)
+  graceEnd:'09:30',           // arrive by this time = on-time; after = late (₹ penalty)
+  shiftOutStart:'17:30',      // expected earliest leaving time
+  shiftEnd:'18:00',           // expected latest leaving time
+  requiredHours:8.5,          // total office span required from arrival (includes lunch)
+  lunchStart:'13:00', lunchMins:45,   // lunch break window (unpaid, within the span)
+  fullDayHours:7.75,          // net worked hours for a FULL day (8.5 span − 0.75 lunch)
+  halfDayHours:4.25,          // at/above this but below full = Half Day; below = Absent
+  lopBasis:'monthDays',       // per-day salary basis for deductions: monthDays | fixed30 | workingDays26
+  paidLeavesPerMonth:1,halfDayAllowance:0,unplannedLop:true,unplannedPenaltyMultiplier:1,sandwichLeave:true,attendanceRulesV2:true,customRules:[]};
 /* Safe storage: use localStorage when available, else fall back to in-memory
    (keeps the app working even when opened directly from disk in strict browsers). */
 const STORE = (() => {
@@ -294,7 +303,11 @@ const fmtDate = d => d ? new Date(d+'T00:00:00').toLocaleDateString('en-US',{mon
 const fmtMoney = n => '₹'+Number(Math.round(n||0)).toLocaleString('en-IN');
 const initials = n => n.split(' ').map(w=>w[0]).slice(0,2).join('').toUpperCase();
 const daysBetween = (a,b)=>Math.round((new Date(b)-new Date(a))/864e5)+1;
-function save(){ STORE.setItem(DB_KEY, JSON.stringify(DB)); if(CLOUD) cloudSave(); }
+function save(){
+  try{ STORE.setItem(DB_KEY, JSON.stringify(DB)); }
+  catch(e){ console.warn('Local save failed (quota?):',e.message||e); if(!CLOUD) toast('Browser storage full — download a backup and clear space','err'); }
+  if(CLOUD) cloudSave();
+}
 /* ---- password hashing (SHA-256, sync) ---- */
 function sha256(ascii){
   function rightRotate(v,a){return (v>>>a)|(v<<(32-a));}
@@ -644,8 +657,8 @@ function seed(){
       kpiTemplates:JSON.parse(JSON.stringify(KPI_TEMPLATES_DEFAULT)),docTypes:[...DOC_TYPES_DEFAULT],
       payrollPolicy:{...DEFAULT_PAYROLL_POLICY},
       salesIncentives:[
-        {id:'si1',emp:'e7',month:'2026-05',target:200000,revenue:280000,rate:5,newRev:80000,ht1:120000,ht2:0,testimonials:1,retainer2nd:0,upsellSame:0,retainer3plus:0,retention:'',badDebt:0,status:'Paid',createdOn:'2026-06-02'},
-        {id:'si2',emp:'e6',month:'2026-05',target:500000,revenue:660000,rate:4,newRev:200000,ht1:0,ht2:250000,testimonials:2,retainer2nd:50000,upsellSame:40000,retainer3plus:80000,retention:'3',badDebt:0,status:'Pending',createdOn:'2026-06-03'}
+        {id:'si1',emp:'e7',month:'2026-05',target:200000,newBusiness:290000,retainerBook:600000,retainersCollected:true,ht1:0,ht2:0,testimonials:0,badDebt:0,status:'Paid',createdOn:'2026-06-02'},
+        {id:'si2',emp:'e6',month:'2026-05',target:500000,newBusiness:425000,retainerBook:800000,retainersCollected:true,ht1:0,ht2:0,testimonials:1,badDebt:0,status:'Pending',createdOn:'2026-06-03'}
       ],
       assets:[
         {id:'as1',name:'MacBook Pro 14"',type:'Laptop',serial:'C02X１23ABCD',assignedTo:'e10',status:'Assigned',assignedOn:'2022-11-08',notes:'Editing machine'},
@@ -653,10 +666,20 @@ function seed(){
         {id:'as3',name:'Sony A6400 Camera',type:'Camera',serial:'SNY-A6400-22',assignedTo:'e9',status:'Assigned',assignedOn:'2022-07-11',notes:'UGC shoots'},
         {id:'as4',name:'Boya Mic Kit',type:'Mic',serial:'BOYA-1102',assignedTo:'',status:'Available',assignedOn:'',notes:'Spare'},
         {id:'as5',name:'Canva Pro License',type:'License',serial:'CANVA-TEAM-7',assignedTo:'e8',status:'Assigned',assignedOn:'2024-01-01',notes:'Annual'}
+      ],
+      docTemplates:[
+        {id:'tpl1',title:'Offer Letter',category:'HR & Onboarding',description:'Standard offer letter template for new hires.',fileUrl:'',fileName:'',link:'',updatedOn:'2026-05-10',updatedBy:'e1'},
+        {id:'tpl2',title:'Employment Agreement',category:'Legal & Contracts',description:'Full-time employment contract with standard clauses.',fileUrl:'',fileName:'',link:'',updatedOn:'2026-05-10',updatedBy:'e1'},
+        {id:'tpl3',title:'NDA (Non-Disclosure Agreement)',category:'Legal & Contracts',description:'Mutual confidentiality agreement for clients & vendors.',fileUrl:'',fileName:'',link:'',updatedOn:'2026-04-22',updatedBy:'e1'},
+        {id:'tpl4',title:'Leave Application Form',category:'HR & Onboarding',description:'Printable leave request form.',fileUrl:'',fileName:'',link:'',updatedOn:'2026-03-15',updatedBy:'e2'},
+        {id:'tpl5',title:'Client Proposal Deck',category:'Sales & Marketing',description:'Editable pitch/proposal template for new business.',fileUrl:'',fileName:'',link:'',updatedOn:'2026-06-01',updatedBy:'e6'},
+        {id:'tpl6',title:'Invoice Template',category:'Finance',description:'GST-ready invoice format.',fileUrl:'',fileName:'',link:'',updatedOn:'2026-02-08',updatedBy:'e1'},
+        {id:'tpl7',title:'Reimbursement Claim Form',category:'Finance',description:'Expense reimbursement claim with receipt section.',fileUrl:'',fileName:'',link:'',updatedOn:'2026-01-20',updatedBy:'e2'},
+        {id:'tpl8',title:'Experience / Relieving Letter',category:'HR & Onboarding',description:'Issued at offboarding.',fileUrl:'',fileName:'',link:'',updatedOn:'2026-05-30',updatedBy:'e2'}
       ]};
   save();
 }
-const DB_COLLECTIONS=['departments','employees','leaveTypes','leaveBalances','leaveRequests','holidays','attendance','jobs','candidates','interviews','onboardTasks','offboardTasks','exitInterviews','salary','payrollRuns','reviewCycles','goals','reviews','feedback','courses','courseAssign','certifications','recognitions','surveys','enps','policies','auditLogs','notifications','kpiScorecards','payslips','reimbursements','salaryRevisions','documents','timesheets','investmentProofs','salesIncentives','assets'];
+const DB_COLLECTIONS=['departments','employees','leaveTypes','leaveBalances','leaveRequests','holidays','attendance','jobs','candidates','interviews','onboardTasks','offboardTasks','exitInterviews','salary','payrollRuns','reviewCycles','goals','reviews','feedback','courses','courseAssign','certifications','recognitions','surveys','enps','policies','auditLogs','notifications','kpiScorecards','payslips','reimbursements','salaryRevisions','documents','timesheets','investmentProofs','salesIncentives','assets','docTemplates'];
 function loadDB(){
   const raw=STORE.getItem(DB_KEY);
   if(raw){ try{ DB=JSON.parse(raw); }catch(e){ seed(); return; } } else { seed(); return; }
@@ -675,6 +698,17 @@ function migrateLoaded(){
   if(!Array.isArray(DB.docTypes)||!DB.docTypes.length){ DB.docTypes=[...DOC_TYPES_DEFAULT]; changed=true; }
   if(!DB.payrollPolicy||typeof DB.payrollPolicy!=='object'){ DB.payrollPolicy={...DEFAULT_PAYROLL_POLICY}; changed=true; }
   else { Object.keys(DEFAULT_PAYROLL_POLICY).forEach(k=>{ if(DB.payrollPolicy[k]===undefined){ DB.payrollPolicy[k]=DEFAULT_PAYROLL_POLICY[k]; changed=true; } }); }
+  // One-time upgrade to Crawl Digitally attendance rules (every late charged, half-day = ½ day, absent = full day).
+  // Applied once; admins can still change any value afterwards in Payroll → Rules.
+  if(DB.payrollPolicy && !DB.payrollPolicy.attendanceRulesV2){
+    const pp=DB.payrollPolicy;
+    pp.graceEnd=pp.graceEnd||'09:30'; pp.lateThresholdMin=30;
+    pp.lateGraceMarks=0;              // no free lates — every late after grace = ₹ penalty
+    pp.halfDayAllowance=0;            // every short day is chargeable
+    pp.unplannedPenaltyMultiplier=1;  // unpaid leave deducted at 1× (no doubling)
+    if(pp.latePerMark===undefined||pp.latePerMark===null) pp.latePerMark=50;
+    pp.attendanceRulesV2=true; changed=true;
+  }
   return changed;
 }
 function resetDemo(){
@@ -723,6 +757,7 @@ const NAV = [
   {id:'employees',label:'Employees',ic:'👥',roles:'all'},
   {id:'orgchart',label:'Org Chart',ic:'🗂️',roles:'all'},
   {id:'documents',label:'Documents',ic:'📁',roles:'all'},
+  {id:'templates',label:'Document Templates',ic:'📄',roles:'all'},
   {id:'assets',label:'Asset Register',ic:'💻',roles:['Super Admin','HR Manager','Manager']},
   {section:'Operations'},
   {id:'leave',label:'Leave',ic:'🌴',roles:'all'},
@@ -831,7 +866,32 @@ async function cloudLogin(){
   err.textContent=''; await afterCloudAuth(data.user);
 }
 function cloudSave(){ if(!CLOUD||!_sb||!_cloudReady) return; clearTimeout(_pushTimer); _pushTimer=setTimeout(cloudPushNow,800); }
-async function cloudPushNow(){ if(!_sb) return; try{ await _sb.from('app_data').upsert({id:'main',data:DB,updated_at:new Date().toISOString()}); }catch(e){ console.warn('Cloud save failed:',e.message||e); } }
+async function cloudPushNow(){ if(!_sb) return; try{ const {error}=await _sb.from('app_data').upsert({id:'main',data:DB,updated_at:new Date().toISOString()}); if(error) throw error; }catch(e){ console.warn('Cloud save failed:',e.message||e); toast('Cloud save failed — check your connection, then try again','err'); } }
+
+/* ---------- Email notifications (cloud only: Supabase Edge Function → Resend) ----------
+   Fires-and-forgets: an email failure never blocks or reverses the in-app action. */
+function appUrl(){ try{ return (location&&location.origin&&!/^file/.test(location.origin))?location.origin:''; }catch(e){ return ''; } }
+function empEmail(id){ const e=DB.employees.find(x=>x.id===id); return (e&&e.email)?e.email:''; }
+function emailWrap(title, bodyHtml){
+  const url=appUrl();
+  return `<div style="font-family:Arial,Helvetica,sans-serif;max-width:560px;margin:0 auto;border:1px solid #eee;border-radius:12px;overflow:hidden">
+    <div style="background:#4f46e5;color:#fff;padding:18px 22px;font-size:18px;font-weight:700">People at Crawl</div>
+    <div style="padding:22px">
+      <h2 style="margin:0 0 12px;font-size:17px;color:#111">${title}</h2>
+      <div style="font-size:14px;color:#333;line-height:1.6">${bodyHtml}</div>
+      ${url?`<p style="margin-top:22px"><a href="${url}" style="background:#4f46e5;color:#fff;text-decoration:none;padding:10px 18px;border-radius:8px;font-size:14px">Open People at Crawl</a></p>`:''}
+    </div>
+    <div style="padding:14px 22px;background:#fafafa;color:#999;font-size:11px">Crawl Digitally · Indore · Automated HR notification — please do not reply.</div>
+  </div>`;
+}
+function sendEmail(to, subject, innerHtml){
+  if(!CLOUD || !_sb || !to) return;   // email only in cloud mode, needs a recipient
+  try{
+    _sb.functions.invoke('send-email',{ body:{ to, subject, html:emailWrap(subject, innerHtml) } })
+      .then(res=>{ if(res&&res.error) console.warn('Email send failed:',(res.error.message||res.error)); })
+      .catch(err=>console.warn('Email send error:',(err&&(err.message||err))));
+  }catch(e){ console.warn('Email threw:',(e&&(e.message||e))); }
+}
 function buildNav(){
   $('#nav').innerHTML=NAV.map(item=>{
     if(item.section) return `<div class="nav-section">${item.section}</div>`;
@@ -1192,6 +1252,8 @@ function addEmployee(){
     DB.employees.push(e);
     DB.leaveTypes.forEach(t=>DB.leaveBalances.push({id:uid('lb'),emp:e.id,type:t.id,allocated:t.maxDays,used:0,pending:0}));
     ensureSalary(e.id,e.role,e.empType);
+    if(e.accountActive) sendEmail(e.email, 'Welcome to Crawl Digitally — your HR account is ready',
+      `<p>Hi ${esc((e.name||'').split(' ')[0]||'there')},</p><p>Your account on <b>People at Crawl</b>, our HR portal, has been created.</p><p><b>Login email:</b> ${esc(e.email)}<br>Your password will be shared with you separately by HR.</p><p>You can view your profile, apply for leave, submit reimbursements, and see your payslips once you sign in. If you can't sign in yet, contact HR to activate your login.</p>`);
     log('Created employee',e.name+' ('+e.role+')'); save(); renderEmpTable();
     toast(CLOUD?'Employee added — create their login in Supabase → Auth with '+e.email:'Employee added · login: '+e.email,'ok');
   },'Add Employee');
@@ -1374,9 +1436,15 @@ function requestLeave(){
     const onBehalf=emp!==SESSION.empId;
     const r={id:uid('lr'),emp,type:val('f-lt'),from:val('f-from'),to:val('f-to'),reason:val('f-reason'),status:onBehalf?'Approved':'Pending',applied:today(),approver:onBehalf?SESSION.empId:undefined};
     DB.leaveRequests.push(r);
+    const ltName=(DB.leaveTypes.find(t=>t.id===r.type)||{}).name||'Leave';
     if(onBehalf){ const b=DB.leaveBalances.find(x=>x.emp===emp&&x.type===r.type); if(b) b.used+=daysBetween(r.from,r.to);
-      DB.notifications.push({id:uid('n'),to:emp,text:`${SESSION.name} applied leave on your behalf (${fmtDate(r.from)}–${fmtDate(r.to)})`,ts:today(),read:false,icon:'🌴'}); }
-    else DB.notifications.push({id:uid('n'),to:DB.employees.find(e=>e.id===SESSION.empId)?.manager||'e3',text:`New leave request from ${SESSION.name}`,ts:today(),read:false,icon:'🌴'});
+      DB.notifications.push({id:uid('n'),to:emp,text:`${SESSION.name} applied leave on your behalf (${fmtDate(r.from)}–${fmtDate(r.to)})`,ts:today(),read:false,icon:'🌴'});
+      sendEmail(empEmail(emp), 'Leave applied on your behalf',
+        `<p><b>${esc(SESSION.name)}</b> applied leave on your behalf.</p><p>Type: ${esc(ltName)}<br>Dates: ${fmtDate(r.from)} – ${fmtDate(r.to)}</p>`); }
+    else { const mgrId=DB.employees.find(e=>e.id===SESSION.empId)?.manager||'e3';
+      DB.notifications.push({id:uid('n'),to:mgrId,text:`New leave request from ${SESSION.name}`,ts:today(),read:false,icon:'🌴'});
+      sendEmail(empEmail(mgrId), 'New leave request from '+SESSION.name,
+        `<p><b>${esc(SESSION.name)}</b> has requested leave and needs your approval.</p><p>Type: ${esc(ltName)}<br>Dates: ${fmtDate(r.from)} – ${fmtDate(r.to)}<br>Reason: ${esc(r.reason||'—')}</p><p>Please review and approve it in the app.</p>`); }
     log('Leave request',empName(emp)+' '+fmtDate(r.from)+'–'+fmtDate(r.to)); save(); navigate('leave'); updateNotifBadge(); toast(onBehalf?'Leave applied on behalf':'Leave requested','ok');
   },'Submit Request');
 }
@@ -1384,6 +1452,8 @@ function approveLeave(id,decision){
   const r=DB.leaveRequests.find(x=>x.id===id); r.status=decision; r.approver=SESSION.empId;
   if(decision==='Approved'){ const b=DB.leaveBalances.find(x=>x.emp===r.emp&&x.type===r.type); if(b) b.used+=daysBetween(r.from,r.to); }
   DB.notifications.push({id:uid('n'),to:r.emp,text:`Your leave request was ${decision.toLowerCase()}`,ts:today(),read:false,icon:decision==='Approved'?'✅':'❌'});
+  sendEmail(empEmail(r.emp), 'Your leave request was '+decision.toLowerCase(),
+    `<p>Your leave request for <b>${fmtDate(r.from)} – ${fmtDate(r.to)}</b> has been <b>${decision.toLowerCase()}</b>${SESSION.name?(' by '+esc(SESSION.name)):''}.</p>`);
   log(decision+' leave request',empName(r.emp)); save();
   const c=$('#leave-content'); if(c) c.innerHTML=leavePane();
   if(CURRENT_VIEW==='dashboard') navigate('dashboard');
@@ -1554,13 +1624,18 @@ function fmtHMS(ms){ const s=Math.max(0,Math.floor(ms/1000)); return [Math.floor
 function refreshTodayClock(){ const c=$('#att-content'); if(c) c.innerHTML=attPane(); startClock(); }
 function clockIn(){
   let rec=todayRec(); const now=Date.now(); const hhmm=new Date().toTimeString().slice(0,5);
-  if(!rec){ const lateLimit=addMinutes(policy().shiftStart,policy().lateThresholdMin); rec={id:uid('at'),emp:SESSION.empId,date:today(),in:hhmm,out:'',segments:[{s:now,e:null}],onBreak:false,hours:0,status:'Present',late:hhmm>lateLimit}; DB.attendance.push(rec); }
+  if(!rec){ const lateLimit=lateCutoff(); const isLate=hhmm>lateLimit; rec={id:uid('at'),emp:SESSION.empId,date:today(),in:hhmm,out:'',segments:[{s:now,e:null}],onBreak:false,hours:0,status:'Present',late:isLate}; DB.attendance.push(rec); if(isLate) toast('Marked late (after '+lateLimit+') — a '+fmtMoney(policy().latePerMark||0)+' late-coming penalty will apply','err'); }
   else { rec.out=''; rec.onBreak=false; if(!rec.segments) rec.segments=[]; rec.segments.push({s:now,e:null}); if(!rec.in) rec.in=hhmm; }
   finishClockAction(rec,'Clocked in at '+hhmm);
 }
 function clockPause(){ const rec=todayRec(); const open=recOpenSeg(rec); if(!open){toast('Not running','err');return;} open.e=Date.now(); rec.onBreak=true; finishClockAction(rec,'On break ⏸'); }
 function clockResume(){ const rec=todayRec(); if(!rec||!rec.onBreak){toast('Not on break','err');return;} rec.segments.push({s:Date.now(),e:null}); rec.onBreak=false; finishClockAction(rec,'Resumed ▶'); }
-function clockOut(){ const rec=todayRec(); if(!rec){toast('Not clocked in','err');return;} const open=recOpenSeg(rec); if(open) open.e=Date.now(); rec.onBreak=false; rec.out=new Date().toTimeString().slice(0,5); const h=workedMs(rec)/3.6e6; rec.hours=Math.round(h*10)/10; rec.status=h>0&&h<4?'Half Day':'Present'; finishClockAction(rec,'Clocked out — '+rec.hours+' hrs worked'); }
+function clockOut(){ const rec=todayRec(); if(!rec){toast('Not clocked in','err');return;} const open=recOpenSeg(rec); if(open) open.e=Date.now(); rec.onBreak=false; rec.out=new Date().toTimeString().slice(0,5); const h=workedMs(rec)/3.6e6; rec.hours=Math.round(h*10)/10; rec.status=dayStatusForHours(rec.hours); finishClockAction(rec,'Clocked out — '+rec.hours+' hrs worked ('+rec.status+')'); }
+/* Latest on-time arrival (grace end, e.g. 09:30). Falls back to shift start + threshold. */
+function lateCutoff(){ const p=policy(); return p.graceEnd||addMinutes(p.shiftStart||'09:00',p.lateThresholdMin||30); }
+/* Classify a day from net worked hours per the policy thresholds. */
+function dayStatusForHours(h){ const p=policy(); const full=+p.fullDayHours||7.75, half=+p.halfDayHours||4.25;
+  if(h>=full) return 'Present'; if(h>=half) return 'Half Day'; return 'Absent'; }
 function finishClockAction(rec,msg){ save(); refreshTodayClock(); toast(msg,'ok'); }
 function startClock(){ clearInterval(window._clk);
   const tick=()=>{ const el=$('#att-clock'); if(!el){clearInterval(window._clk);return;}
@@ -1588,7 +1663,11 @@ VIEWS.payroll = () => {
 /* ----- payslip helpers (India statutory) ----- */
 function psGross(ps){ return ps.basic+ps.hra+ps.transport+ps.special+(ps.bonus||0)+(ps.arrears||0); }
 function psLopDays(ps){ return Math.max(0,(ps.lop||0)-(ps.lopReversal||0)); }
-function psLopDed(ps){ return Math.round((ps.basic+ps.hra)/30*psLopDays(ps)); }
+function daysInMonth(m){ const [y,mo]=(m||today().slice(0,7)).split('-').map(Number); return new Date(y,mo,0).getDate(); }
+/* Per-day salary used for absent/half-day deductions. Full monthly salary (no statutory) ÷ divisor. */
+function perDayDivisor(month){ const b=policy().lopBasis; return b==='fixed30'?30:(b==='workingDays26'?26:daysInMonth(month)); }
+function psPerDay(ps){ const monthly=ps.basic+ps.hra+ps.transport+ps.special; return monthly/perDayDivisor(ps.month); }
+function psLopDed(ps){ return Math.round(psPerDay(ps)*psLopDays(ps)); }
 function psStat(ps){ return (ps.epf||0)+(ps.esi||0)+(ps.pt||0)+(ps.lwf||0)+(ps.tds||0); }
 function psDed(ps){ return psStat(ps)+psLopDed(ps)+(ps.lateDeduction||0)+(ps.otherDeduction||0); }
 function psNet(ps){ return psGross(ps)-psDed(ps); }
@@ -1636,11 +1715,12 @@ function autoDeductions(empId,month){ const p=policy();
   const rawUnplanned=p.unplannedLop?unplannedLopDays(empId,month):0;
   const chargeable=Math.max(0,rawUnplanned-(p.paidLeavesPerMonth||0));
   const unplannedLopD=chargeable*(p.unplannedPenaltyMultiplier||1);
-  // half-days beyond the monthly free allowance → ½ day each
+  // attendance-driven LOP: each Absent day = 1 day, each Half Day = ½ day (beyond free allowance)
+  const absentDays=DB.attendance.filter(a=>a.emp===empId&&a.date.startsWith(month)&&a.status==='Absent').length;
   const halfMarks=DB.attendance.filter(a=>a.emp===empId&&a.date.startsWith(month)&&a.status==='Half Day').length;
   const extraHalf=Math.max(0,halfMarks-(p.halfDayAllowance||0));
-  const lop=unplannedLopD+lopFromLate+extraHalf*0.5;
-  return {lop,lateDeduction,lateMarks:marks};
+  const lop=unplannedLopD+lopFromLate+absentDays+extraHalf*0.5;
+  return {lop,lateDeduction,lateMarks:marks,absentDays,halfDays:halfMarks};
 }
 
 function payrollEmployeeView(){
@@ -1691,17 +1771,19 @@ function payPane(){
         <div><b>${p.statutoryEnabled?'Statutory deductions ON':'Base salary only — no statutory cuts'}</b>
         <div class="muted" style="font-size:12px">${p.statutoryEnabled?'EPF, ESI, PT, LWF & TDS are deducted on payslips':'EPF / ESI / PT / LWF / TDS are NOT deducted. Only the rules below apply.'}</div></div></div>
       <div class="grid-2">
-      ${card('Free Allowances (per month)',`
-        ${miniRow('Paid leaves',p.paidLeavesPerMonth+' / month free')}
-        ${miniRow('Late grace',p.lateGraceMarks+' late marks / month free')}
-        ${miniRow('Half-day allowance',p.halfDayAllowance+' / month free')}
-        ${miniRow('Shift start',(p.shiftStart||'09:00')+' · late after +'+p.lateThresholdMin+' min')}`)}
-      ${card('Penalties',`
-        ${miniRow('Late coming',p.lateRule==='amount'?fmtMoney(p.latePerMark)+' per late beyond grace':'1 day LOP per '+p.latesPerLopDay+' extra lates')}
-        ${miniRow('Unplanned / unpaid leave',p.unplannedLop?(p.unplannedPenaltyMultiplier+'× days deducted (after free allowance)'):'Not deducted')}
-        ${miniRow('Extra half-days','½ day deducted each beyond allowance')}
-        ${miniRow('Sandwich leave',p.sandwichLeave?'Weekends within leave counted':'Weekends excluded')}
-        ${miniRow('LOP day rate','(Basic + HRA) ÷ 30 per day')}`)}
+      ${card('🕘 Office Timings',`
+        ${miniRow('Shift',(p.shiftStart||'09:00')+' – '+(p.shiftEnd||'18:00'))}
+        ${miniRow('On-time until','arrive by '+(p.graceEnd||'09:30')+' (after = late)')}
+        ${miniRow('Leave window',(p.shiftOutStart||'17:30')+' – '+(p.shiftEnd||'18:00'))}
+        ${miniRow('Required / day',(p.requiredHours||8.5)+' hrs (incl. '+(p.lunchMins||45)+' min lunch @ '+(p.lunchStart||'13:00')+')')}
+        ${miniRow('Full / Half day','≥ '+(p.fullDayHours||7.75)+' hrs worked = full · ≥ '+(p.halfDayHours||4.25)+' = half · below = absent')}`)}
+      ${card('Penalties & Deductions',`
+        ${miniRow('Late coming',p.lateRule==='amount'?fmtMoney(p.latePerMark)+' per late'+(p.lateGraceMarks?(' (first '+p.lateGraceMarks+' free)'):' (no free lates)'):'1 day LOP per '+p.latesPerLopDay+' extra lates')}
+        ${miniRow('Absent (off) day','1 full day salary deducted')}
+        ${miniRow('Sudden half-day','½ day salary deducted'+(p.halfDayAllowance?(' (first '+p.halfDayAllowance+' free)'):''))}
+        ${miniRow('Unplanned / unpaid leave',p.unplannedLop?(p.unplannedPenaltyMultiplier+'× days deducted (after '+(p.paidLeavesPerMonth||0)+' free)'):'Not deducted')}
+        ${miniRow('Per-day rate','monthly salary ÷ '+(p.lopBasis==='fixed30'?'30':(p.lopBasis==='workingDays26'?'26 working days':'days in month')))}
+        ${miniRow('Income tax / TDS',p.statutoryEnabled?'Deducted':'Not deducted')}`)}
       </div>
       ${p.statutoryEnabled?`<div style="margin-top:16px">${card('Statutory Rates (active)',`
         ${miniRow('EPF',p.epfRate+'% of basic (cap ₹'+(p.epfCap||0).toLocaleString('en-IN')+')')}
@@ -1799,7 +1881,7 @@ function buildPayslip(emp,month){
   const tds = policy().statutoryEnabled ? (s.tds||0) : 0;
   return {id:uid('ps'),emp:emp.id,month,basic:s.basic,hra:s.hra,transport:s.transport,special:s.special,
     bonus:0,arrears:0,epf:st.epf,esi:st.esi,pt:st.pt,lwf:st.lwf,tds,
-    lop:auto.lop,lopReversal:0,lateMarks:auto.lateMarks,lateDeduction:lateDed,otherDeduction:customDeductionTotal(),
+    lop:auto.lop,lopReversal:0,lateMarks:auto.lateMarks,absentDays:auto.absentDays,halfDays:auto.halfDays,lateDeduction:lateDed,otherDeduction:customDeductionTotal(),
     status:'Generated',disbursement:'Pending',generatedOn:today()};
 }
 function recalcRun(month){ const run=DB.payrollRuns.find(r=>r.month===month);
@@ -1854,12 +1936,22 @@ function editSalaryStructure(empId){
 function editPolicy(){
   const p=policy();
   const body=`<div class="form-row">${field('Apply statutory deductions (EPF/ESI/PT/LWF/TDS)?','f-staton',p.statutoryEnabled?'No — base salary only':'No — base salary only','select',[{v:'no',t:'No — base salary only'},{v:'yes',t:'Yes — deduct statutory'}].map(o=>o))}</div>
-    <h4 style="margin:8px 0 8px;color:var(--brand)">Free Allowances (per month)</h4>
+    <h4 style="margin:8px 0 8px;color:var(--brand)">🕘 Office Timings</h4>
+    <div class="form-row two">${field('Shift start (HH:MM)','f-shift',p.shiftStart||'09:00')}${field('On-time until — grace end (HH:MM)','f-grace',p.graceEnd||'09:30')}</div>
+    <div class="form-row two">${field('Leave window from (HH:MM)','f-outs',p.shiftOutStart||'17:30')}${field('Leave window to (HH:MM)','f-oute',p.shiftEnd||'18:00')}</div>
+    <div class="form-row two">${field('Required hours / day (incl. lunch)','f-reqh',p.requiredHours,'number')}${field('Lunch start (HH:MM)','f-lunchs',p.lunchStart||'13:00')}</div>
+    <div class="form-row two">${field('Lunch minutes','f-lunchm',p.lunchMins,'number')}${field('Full-day worked hours (net)','f-fdh',p.fullDayHours,'number')}</div>
+    ${field('Half-day threshold (worked hours)','f-hdh',p.halfDayHours,'number')}
+    <p class="muted" style="font-size:11px;margin:4px 0 0">Worked ≥ full-day hours = Present · between half & full = Half Day · below half-day threshold = Absent.</p>
+    <h4 style="margin:12px 0 8px;color:var(--brand)">Free Allowances (per month)</h4>
     <div class="form-row two">${field('Paid leaves / month','f-pl',p.paidLeavesPerMonth,'number')}${field('Half-days allowed / month','f-hd',p.halfDayAllowance,'number')}</div>
-    <div class="form-row two">${field('Free late marks / month','f-lg',p.lateGraceMarks,'number')}${field('Shift start (HH:MM)','f-shift',p.shiftStart||'09:00')}</div>
+    ${field('Free late marks / month','f-lg',p.lateGraceMarks,'number')}
     <h4 style="margin:12px 0 8px;color:var(--brand)">Late-coming Penalty</h4>
     <div class="form-row two">${field('Late after (minutes past shift)','f-lthr',p.lateThresholdMin,'number')}${field('Penalty type','f-lr',p.lateRule,'select',[{v:'amount',t:'Fixed amount per late'},{v:'halfday',t:'LOP day per N lates'}])}</div>
     <div class="form-row two">${field('₹ per extra late','f-lpm',p.latePerMark,'number')}${field('Lates per 1 LOP day','f-lpl',p.latesPerLopDay,'number')}</div>
+    <h4 style="margin:12px 0 8px;color:var(--brand)">Absent / Half-day Deduction Basis</h4>
+    ${field('Per-day salary = monthly ÷','f-lopb',p.lopBasis,'select',[{v:'monthDays',t:'Days in that month'},{v:'fixed30',t:'Fixed 30 days'},{v:'workingDays26',t:'26 working days'}])}
+    <p class="muted" style="font-size:11px;margin:4px 0 0">1 absent day = one day's salary · 1 half-day = ½ day's salary.</p>
     <h4 style="margin:12px 0 8px;color:var(--brand)">Leave Penalty</h4>
     <div class="form-row two">${field('Unplanned/unpaid leave → LOP?','f-unp',p.unplannedLop?'Yes':'No','select',['Yes','No'])}${field('Unplanned penalty (× days)','f-unpm',p.unplannedPenaltyMultiplier,'number')}</div>
     ${field('Sandwich leave (count weekends in leave)','f-sw',p.sandwichLeave?'Yes':'No','select',['Yes','No'])}
@@ -1870,7 +1962,10 @@ function editPolicy(){
     ${field('Labour Welfare Fund ₹','f-lwf',p.lwfAmount,'number')}`;
   openModal('Edit Payroll Rules',body,()=>{
     DB.payrollPolicy=Object.assign({},p,{statutoryEnabled:val('f-staton')==='yes',
-      paidLeavesPerMonth:+val('f-pl')||0,halfDayAllowance:+val('f-hd')||0,lateGraceMarks:+val('f-lg')||0,shiftStart:val('f-shift')||'09:00',
+      shiftStart:val('f-shift')||'09:00',graceEnd:val('f-grace')||'09:30',shiftOutStart:val('f-outs')||'17:30',shiftEnd:val('f-oute')||'18:00',
+      requiredHours:+val('f-reqh')||8.5,lunchStart:val('f-lunchs')||'13:00',lunchMins:+val('f-lunchm')||45,
+      fullDayHours:+val('f-fdh')||7.75,halfDayHours:+val('f-hdh')||4.25,lopBasis:val('f-lopb')||'monthDays',
+      paidLeavesPerMonth:+val('f-pl')||0,halfDayAllowance:+val('f-hd')||0,lateGraceMarks:+val('f-lg')||0,
       lateThresholdMin:+val('f-lthr')||0,lateRule:val('f-lr'),latePerMark:+val('f-lpm')||0,latesPerLopDay:+val('f-lpl')||3,
       unplannedLop:val('f-unp')==='Yes',unplannedPenaltyMultiplier:+val('f-unpm')||1,sandwichLeave:val('f-sw')==='Yes',
       epfRate:+val('f-epfr'),epfCap:+val('f-epfc'),esiRate:+val('f-esir'),esiErRate:+val('f-esier'),esiThreshold:+val('f-esit'),ptAmount:+val('f-pt'),lwfAmount:+val('f-lwf')});
@@ -1965,7 +2060,7 @@ function payslipHTML(p){
       ${row('Basic',p.basic)}${row('HRA',p.hra)}${row('Transport Allowance',p.transport)}${row('Special Allowance',p.special)}${p.bonus?row('Bonus / One-time',p.bonus):''}${p.arrears?row('Arrears',p.arrears):''}
       <tr><td style="padding-top:6px"><b>Gross Earnings</b></td><td style="text-align:right;padding-top:6px"><b>${fmtMoney(psGross(p))}</b></td></tr>
       <tr><td colspan="2" style="font-weight:700;border-bottom:1px solid #ddd;padding:10px 0 6px;color:#4f46e5">DEDUCTIONS</td></tr>
-      ${row('EPF (Provident Fund)',p.epf,1)}${p.esi?row('ESI',p.esi,1):''}${row('Professional Tax',p.pt,1)}${p.lwf?row('Labour Welfare Fund',p.lwf,1):''}${p.tds?row('TDS (Income Tax)',p.tds,1):''}${lop?row('Loss of Pay ('+psLopDays(p)+' days)',lop,1):''}${p.lateDeduction?row('Late-coming Penalty',p.lateDeduction,1):''}${p.otherDeduction?row('Other Deduction',p.otherDeduction,1):''}
+      ${p.epf?row('EPF (Provident Fund)',p.epf,1):''}${p.esi?row('ESI',p.esi,1):''}${p.pt?row('Professional Tax',p.pt,1):''}${p.lwf?row('Labour Welfare Fund',p.lwf,1):''}${p.tds?row('TDS (Income Tax)',p.tds,1):''}${lop?row('Loss of Pay ('+psLopDays(p)+' day'+(psLopDays(p)===1?'':'s')+(p.absentDays||p.halfDays?' · '+((p.absentDays||0)+' absent, '+(p.halfDays||0)+' half'):'')+')',lop,1):''}${p.lateDeduction?row('Late-coming Penalty'+(p.lateMarks?' ('+p.lateMarks+' late)':''),p.lateDeduction,1):''}${p.otherDeduction?row('Other Deduction',p.otherDeduction,1):''}
       <tr><td style="padding-top:6px"><b>Total Deductions</b></td><td style="text-align:right;padding-top:6px"><b>${fmtMoney(psDed(p))}</b></td></tr>
     </table>
     <div style="display:flex;justify-content:space-between;border-top:2px solid #111;margin-top:14px;padding-top:10px;font-size:17px;font-weight:700">
@@ -2115,11 +2210,35 @@ function candidateForm(c={}){
     <div class="form-row"><label>…or upload Portfolio ${c.portfolioName?`<span class="muted">(current: ${esc(c.portfolioName)})</span>`:''}</label><input type="file" id="f-pffile" accept=".pdf,.png,.jpg,.zip"></div>
     ${field('Notes','f-cnotes',c.notes||'','textarea')}`;
 }
+/* File uploads.
+   Cloud mode: upload to Supabase Storage ('uploads' bucket) and keep only the public URL —
+   this fixes files vanishing on refresh (large data-URLs used to blow the storage quota) and
+   keeps the shared document small. Demo mode (or on any storage error): inline data-URL fallback. */
+function inlineDataURL(f,cb){
+  if(f.size>2*1024*1024){ toast(f.name+' is over 2MB — connect cloud storage to keep large files; stored by name only for now','err'); cb({name:f.name,url:''}); return; }
+  const r=new FileReader(); r.onload=()=>cb({name:f.name,url:r.result}); r.onerror=()=>cb({name:f.name,url:''}); r.readAsDataURL(f);
+}
+function uploadToStorage(f,cb){
+  try{
+    if(f.size>25*1024*1024){ toast(f.name+' is over 25MB — too large to upload','err'); cb({name:f.name,url:''}); return; }
+    const ext=(f.name.split('.').pop()||'bin').toLowerCase().replace(/[^a-z0-9]/g,'');
+    const path='files/'+Date.now()+'_'+Math.random().toString(36).slice(2,8)+(ext?('.'+ext):'');
+    toast('Uploading '+f.name+'…','ok');
+    _sb.storage.from('uploads').upload(path,f,{contentType:f.type||'application/octet-stream',upsert:false})
+      .then(res=>{
+        if(res&&res.error){ console.warn('Storage upload failed, storing inline:',res.error.message||res.error); inlineDataURL(f,cb); return; }
+        const pub=_sb.storage.from('uploads').getPublicUrl(path);
+        const url=pub&&pub.data&&pub.data.publicUrl?pub.data.publicUrl:'';
+        if(!url){ inlineDataURL(f,cb); return; }
+        cb({name:f.name,url});
+      },err=>{ console.warn('Storage upload error, storing inline:',err&&(err.message||err)); inlineDataURL(f,cb); });
+  }catch(e){ console.warn('Storage upload threw, storing inline:',e&&(e.message||e)); inlineDataURL(f,cb); }
+}
 function readFileAsDataURL(input,cb){
   if(!input||!input.files||!input.files[0]){ cb(null); return; }
   const f=input.files[0];
-  if(f.size>2*1024*1024){ toast(f.name+' >2MB — stored by name only','err'); cb({name:f.name,url:''}); return; }
-  const r=new FileReader(); r.onload=()=>cb({name:f.name,url:r.result}); r.onerror=()=>cb({name:f.name,url:''}); r.readAsDataURL(f);
+  if(CLOUD && _sb){ uploadToStorage(f,cb); return; }
+  inlineDataURL(f,cb);
 }
 function collectCandidate(c,done){
   c.name=val('f-cn');c.position=val('f-cpos');c.phone=val('f-cp');c.contactedThrough=val('f-cv');
@@ -3030,12 +3149,16 @@ function applyReimbursement(){
     DB.reimbursements.push(r);
     const mgr=DB.employees.find(e=>e.id===SESSION.empId)?.manager||'e3';
     DB.notifications.push({id:uid('n'),to:mgr,text:`${SESSION.name} submitted a ${fmtMoney(amt)} reimbursement claim`,ts:today(),read:false,icon:'🧾'});
+    sendEmail(empEmail(mgr), SESSION.name+' submitted a reimbursement claim',
+      `<p><b>${esc(SESSION.name)}</b> submitted a reimbursement claim for your approval.</p><p>Category: ${esc(category)}<br>Amount: ${fmtMoney(amt)}<br>Date: ${fmtDate(val('f-rd'))}<br>Description: ${esc(val('f-rdesc'))}</p><p>Please review it in the app.</p>`);
     log('Submitted reimbursement',val('f-rc')+' '+fmtMoney(amt)); save(); navigate('reimbursements'); updateNotifBadge(); toast('Claim submitted','ok');
   },'Submit Claim');
 }
 function decideReimb(id,decision){
   const r=DB.reimbursements.find(x=>x.id===id); r.status=decision; r.approver=SESSION.empId;
   DB.notifications.push({id:uid('n'),to:r.emp,text:`Your ${fmtMoney(r.amount)} reimbursement was ${decision.toLowerCase()}`,ts:today(),read:false,icon:decision==='Approved'?'💳':'❌'});
+  sendEmail(empEmail(r.emp), 'Your reimbursement was '+decision.toLowerCase(),
+    `<p>Your reimbursement claim of <b>${fmtMoney(r.amount)}</b> (${esc(r.category)}) was <b>${decision.toLowerCase()}</b>${SESSION.name?(' by '+esc(SESSION.name)):''}.</p>`);
   log(decision+' reimbursement',empName(r.emp)+' '+fmtMoney(r.amount)); save(); renderReimbTable(); updateNotifBadge();
   toast('Claim '+decision.toLowerCase(),'ok');
 }
@@ -3046,6 +3169,8 @@ function clearReimb(id){
   openModal('Clear Reimbursement',body,()=>{
     r.status='Cleared'; r.clearedOn=today(); r.clearedBy=SESSION.empId; r.payRef=val('f-cn');
     DB.notifications.push({id:uid('n'),to:r.emp,text:`Your reimbursement of ${fmtMoney(r.amount)} has been cleared & paid`,ts:today(),read:false,icon:'✅'});
+    sendEmail(empEmail(r.emp), 'Reimbursement paid: '+fmtMoney(r.amount),
+      `<p>Your reimbursement of <b>${fmtMoney(r.amount)}</b> has been <b>cleared and paid</b>.</p><p>Reference: ${esc(r.payRef||'—')}</p>`);
     log('Cleared reimbursement',empName(r.emp)+' '+fmtMoney(r.amount)); save(); renderReimbTable(); updateNotifBadge(); toast('Payment cleared','ok');
   },'Confirm Payment');
 }
@@ -3122,6 +3247,85 @@ function uploadDocument(){
 }
 function viewDoc(id){ const d=DB.documents.find(x=>x.id===id); const u=asUrl(d.fileUrl)||(d.fileUrl&&d.fileUrl.startsWith('data:')?d.fileUrl:''); if(u){ window.open(u,'_blank'); } else { toast('No file attached (demo placeholder)','err'); } }
 function deleteDoc(id){ const d=DB.documents.find(x=>x.id===id); if(!confirm('Delete '+d.type+' for '+empName(d.emp)+'?'))return; DB.documents=DB.documents.filter(x=>x.id!==id); log('Deleted document',d.type+' · '+empName(d.emp)); save(); renderDocTable(); toast('Deleted','ok'); }
+
+/* =========================================================================
+   DOCUMENT TEMPLATES  (org-wide library of reusable document templates)
+   ========================================================================= */
+const TEMPLATE_CATEGORIES=['HR & Onboarding','Legal & Contracts','Finance','Sales & Marketing','Policies','IT & Operations','Other'];
+function tplCategories(){ return TEMPLATE_CATEGORIES; }
+let tplFilter={term:'',cat:''};
+VIEWS.templates = () => {
+  const cats=[...new Set(DB.docTemplates.map(t=>t.category).filter(Boolean))];
+  return `<div class="section-head"><div><h2>Document Templates</h2><div class="desc">Central library of reusable organisation document templates</div></div>
+    ${isAdmin()?`<button class="btn btn-primary" onclick="addTemplate()">+ Add Template</button>`:''}</div>
+    <div class="kpis">
+      ${kpi('Templates',DB.docTemplates.length,'In library','📄','var(--brand-soft)')}
+      ${kpi('Categories',cats.length,'Organised','🗂️','var(--blue-soft)')}
+      ${kpi('With File / Link',DB.docTemplates.filter(t=>asUrl(t.link)||t.fileUrl).length,'Ready to open','🔗','var(--green-soft)')}
+    </div>
+    <div class="toolbar">
+      <input type="text" placeholder="Search template name or description…" value="${esc(tplFilter.term)}" oninput="tplFilter.term=this.value;renderTemplates()">
+      <select onchange="tplFilter.cat=this.value;renderTemplates()"><option value="">All Categories</option>${tplCategories().map(c=>`<option${tplFilter.cat===c?' selected':''}>${esc(c)}</option>`).join('')}</select>
+      <div class="spacer"></div><button class="btn btn-sm" onclick="tplFilter={term:'',cat:''};navigate('templates')">Clear</button>
+    </div>
+    <div id="tpl-grid"></div>`;
+};
+AFTER.templates = renderTemplates;
+function renderTemplates(){
+  let rows=DB.docTemplates.slice().sort((a,b)=>(a.category||'').localeCompare(b.category||'')||(a.title||'').localeCompare(b.title||''));
+  if(tplFilter.cat) rows=rows.filter(t=>t.category===tplFilter.cat);
+  if(tplFilter.term){const q=tplFilter.term.toLowerCase(); rows=rows.filter(t=>(t.title||'').toLowerCase().includes(q)||(t.description||'').toLowerCase().includes(q)||(t.category||'').toLowerCase().includes(q));}
+  const card=t=>{ const has=asUrl(t.link)||t.fileUrl;
+    return `<div class="card card-pad" style="display:flex;flex-direction:column;gap:8px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+        <div style="font-size:22px">📄</div>${badge(t.category||'Other','b-blue')}
+      </div>
+      <div><b style="font-size:15px">${esc(t.title||'Untitled')}</b></div>
+      <div class="muted" style="font-size:12px;flex:1">${esc(t.description||'')}</div>
+      <div class="muted" style="font-size:11px">Updated ${fmtDate(t.updatedOn)}${t.updatedBy?' · '+esc(empName(t.updatedBy)):''}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        ${has?`<button class="btn btn-sm btn-primary" onclick="openTemplate('${t.id}')">Open</button>`:`<span class="badge-pill b-amber" style="display:inline-block">No file yet</span>`}
+        ${isAdmin()?`<button class="btn btn-sm" onclick="editTemplate('${t.id}')">Edit</button> <button class="btn btn-sm btn-danger" onclick="deleteTemplate('${t.id}')">Delete</button>`:''}
+      </div>
+    </div>`; };
+  const html=rows.length?`<div class="grid-3" style="align-items:stretch">${rows.map(card).join('')}</div>`
+    :`<div class="card"><div class="empty-state"><div class="ico">📄</div>No templates match your filters</div></div>`;
+  const g=$('#tpl-grid'); if(g) g.innerHTML=html;
+}
+function templateForm(t){ t=t||{}; return `<div class="form-row two">${field('Template Title','f-tpl-title',t.title||'')}${field('Category','f-tpl-cat',t.category||tplCategories()[0],'select',tplCategories())}</div>
+  ${field('Description','f-tpl-desc',t.description||'','textarea')}
+  <div class="form-row"><label>Paste link (Drive / URL)</label><input type="text" id="f-tpl-link" value="${esc(t.link||'')}" placeholder="https://drive.google.com/…"></div>
+  <div class="form-row"><label>…or upload file ${t.fileName?`<span class="muted">(current: ${esc(t.fileName)})</span>`:''}</label><input type="file" id="f-tpl-file"></div>`; }
+function addTemplate(){
+  if(!isAdmin()){ toast('Only admins can add templates','err'); return; }
+  openModal('Add Template', templateForm(), ()=>{
+    if(!val('f-tpl-title')){ toast('Title required','err'); return false; }
+    const t={id:uid('tpl'),title:val('f-tpl-title'),category:val('f-tpl-cat'),description:val('f-tpl-desc'),fileUrl:'',fileName:'',link:'',updatedOn:today(),updatedBy:SESSION.empId};
+    readFileAsDataURL($('#f-tpl-file'),f=>{
+      if(f){ t.fileUrl=f.url; t.fileName=f.name; }
+      t.link=asUrl(val('f-tpl-link'));
+      DB.docTemplates.push(t); log('Added template',t.title); save(); closeModal(); renderTemplates(); toast('Template added','ok');
+    });
+    return false;
+  },'Add Template');
+}
+function editTemplate(id){
+  if(!isAdmin()){ toast('Only admins can edit templates','err'); return; }
+  const t=DB.docTemplates.find(x=>x.id===id); if(!t) return;
+  openModal('Edit Template', templateForm(t), ()=>{
+    if(!val('f-tpl-title')){ toast('Title required','err'); return false; }
+    t.title=val('f-tpl-title'); t.category=val('f-tpl-cat'); t.description=val('f-tpl-desc');
+    readFileAsDataURL($('#f-tpl-file'),f=>{
+      if(f){ t.fileUrl=f.url; t.fileName=f.name; }
+      const link=val('f-tpl-link'); t.link=link?asUrl(link):'';
+      t.updatedOn=today(); t.updatedBy=SESSION.empId;
+      log('Edited template',t.title); save(); closeModal(); renderTemplates(); toast('Template updated','ok');
+    });
+    return false;
+  },'Save');
+}
+function openTemplate(id){ const t=DB.docTemplates.find(x=>x.id===id); if(!t) return; const u=asUrl(t.link)||(t.fileUrl&&String(t.fileUrl).startsWith('data:')?t.fileUrl:asUrl(t.fileUrl)); if(u){ window.open(u,'_blank'); } else { toast('No file or link attached yet','err'); } }
+function deleteTemplate(id){ if(!isAdmin()){ toast('Only admins can delete templates','err'); return; } const t=DB.docTemplates.find(x=>x.id===id); if(!t||!confirm('Delete template "'+t.title+'"?')) return; DB.docTemplates=DB.docTemplates.filter(x=>x.id!==id); log('Deleted template',t.title); save(); renderTemplates(); toast('Deleted','ok'); }
 
 /* =========================================================================
    TAX & INVESTMENT DECLARATIONS  (proof of investments approval)
@@ -3307,30 +3511,42 @@ function overTargetIncentive(excess){
   return {rate, amount:Math.round(excess*rate/100)};
 }
 function computeIncentive(inp){
-  const target=+inp.target||0, revenue=+inp.revenue||0, baseRate=+inp.rate||0, newRev=+inp.newRev||0;
-  const reqNew=Math.round(target*0.25);
-  const shortfall=Math.max(0,reqNew-newRev);
-  const shortfallPenalty=Math.round(shortfall*0.5);                 // §6.3 shortfall counted at 50% face value
-  const halfCount=Math.round(0.5*((+inp.retainer2nd||0)+(+inp.upsellSame||0))); // §6.4/§6.5 counted 50% toward target
-  const effRevenue=Math.max(0,revenue-halfCount-shortfallPenalty);  // effective revenue for target
-  const excess=Math.max(0,effRevenue-target);
-  const targetMet=effRevenue>=target;
-  const base=Math.round(revenue*baseRate/100);                      // §6.1 base commission on revenue received
-  const htBonus=Math.round((+inp.ht1||0)*0.02+(+inp.ht2||0)*0.05);  // §6.2 high-ticket: ₹1L+ +2%, ₹2L+ +5%
-  const testimonial=(+inp.testimonials||0)*1000;                    // testimonial incentive ₹1,000/client
-  const retainerOngoing=targetMet?Math.round((+inp.retainer3plus||0)*0.01):0; // §6.4 1% from 3rd month if target met
-  const over=overTargetIncentive(excess);                           // §6.2 over-target slabs
-  const retention=(inp.retention==='3'?1500:0)+(inp.retention==='6'?2500:0);   // retention bonus
-  const badDebt=+inp.badDebt||0;                                    // §6.6 recovery
-  const total=base+htBonus+testimonial+retainerOngoing+over.amount+retention-badDebt;
-  return {reqNew,shortfall,shortfallPenalty,halfCount,effRevenue,excess,targetMet,base,htBonus,testimonial,retainerOngoing,over,retention,badDebt,total,
-    newClientPct:target?Math.round(newRev/target*100):0,achievement:target?Math.round(effRevenue/target*100):0};
+  // ── Crawl Digitally Sales Commission Plan ──────────────────────────────────
+  const target      = +inp.target||0;                 // monthly new-business target
+  const newBusiness = +inp.newBusiness||0;            // new business collected this month
+  const retainerBook= +inp.retainerBook||0;           // total ongoing retainer book value
+  const collected   = inp.retainersCollected!==false; // payout only on collected retainers
+  const achievement = target ? Math.round(newBusiness/target*100) : 0;
+
+  const belowFloor  = achievement < 75;               // <75% → nothing pays out
+  const midBand     = achievement >= 75 && achievement < 100; // 75–99%
+  const fullBand    = achievement >= 100;             // ≥100%
+
+  // Retainer residual: 2% of book in mid-band, 3% at/above target; only if collected.
+  const retainerRate = belowFloor ? 0 : (fullBand ? 3 : 2);
+  const retainerResidual = (belowFloor||!collected) ? 0 : Math.round(retainerBook*retainerRate/100);
+
+  // Over-target incentive on the amount above target — full band only.
+  const excess = Math.max(0, newBusiness - target);
+  const over   = fullBand ? overTargetIncentive(excess) : {rate:0,amount:0};
+
+  // High-ticket bonus on qualifying deals — full band only. ₹1L–<2L +2%, ≥₹2L +5%.
+  const highTicket = fullBand ? Math.round((+inp.ht1||0)*0.02 + (+inp.ht2||0)*0.05) : 0;
+
+  // Testimonial incentive ₹1,000 per verified client — pays from 75% upward.
+  const testimonial = belowFloor ? 0 : (+inp.testimonials||0)*1000;
+
+  const badDebt = +inp.badDebt||0;                    // deducted for uncollected/bad debt
+  const total = Math.max(0, retainerResidual + over.amount + highTicket + testimonial - badDebt);
+
+  return {achievement, belowFloor, midBand, fullBand, retainerRate, retainerResidual,
+    excess, over, highTicket, testimonial, badDebt, collected, total};
 }
 let siTab='calc', siEditId=null;
 VIEWS.salesincentive = () => {
   const tabs=[['calc','Calculator'],['history','Incentive History']];
   if(!tabs.find(t=>t[0]===siTab)) siTab='calc';
-  return `<div class="section-head"><div><h2>Sales Incentive Calculator</h2><div class="desc">Commission & incentives per Sales Policy §6 · track and pay out</div></div></div>
+  return `<div class="section-head"><div><h2>Sales Incentive Calculator</h2><div class="desc">Commission & incentives per Crawl Digitally Sales Commission Plan · track and pay out</div></div></div>
     <div class="tabs">${tabs.map(t=>`<div class="tab${siTab===t[0]?' active':''}" onclick="siTab='${t[0]}';${t[0]==='calc'?'':'siEditId=null;'}navigate('salesincentive')">${t[1]}</div>`).join('')}</div>
     <div id="si-content">${siPane()}</div>`;
 };
@@ -3348,19 +3564,17 @@ function siPane(){
           <div class="form-row" style="margin:0"><label>Sales Rep</label><select id="si-emp" style="width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:7px">${reps.map(e=>`<option value="${e.id}"${v.emp===e.id?' selected':''}>${esc(e.name)}</option>`).join('')}</select></div>
           <div class="form-row" style="margin:0"><label>Month</label><input type="month" id="si-month" value="${v.month||today().slice(0,7)}" style="width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:7px"></div>
         </div>
-        <div class="form-row two">${siInput('Monthly Target ₹','si-target',v.target)}${siInput('Revenue Received ₹','si-revenue',v.revenue,'payment received')}</div>
-        <div class="form-row two">${siInput('Base Commission %','si-rate',v.rate)}${siInput('New-Client Revenue ₹','si-new',v.newRev,'min 25% of target')}</div>
-        <h4 style="margin:6px 0 8px;color:var(--brand);font-size:13px">High-Ticket & Bonuses</h4>
-        <div class="form-row two">${siInput('₹1L–2L deals total ₹','si-ht1',v.ht1,'+2%')}${siInput('₹2L+ deals total ₹','si-ht2',v.ht2,'+5%')}</div>
-        ${siInput('Verified Testimonials (count)','si-test',v.testimonials,'₹1,000 each')}
-        <h4 style="margin:6px 0 8px;color:var(--brand);font-size:13px">Retainer / Upsell (counted 50% to target)</h4>
-        <div class="form-row two">${siInput('Retainer 2nd-month bill ₹','si-ret2',v.retainer2nd)}${siInput('Upsell same-service ₹','si-upsell',v.upsellSame)}</div>
-        ${siInput('Retainer 3rd-month+ bill ₹','si-ret3',v.retainer3plus,'+1% ongoing if target met')}
-        <h4 style="margin:6px 0 8px;color:var(--brand);font-size:13px">Adjustments</h4>
+        <div class="form-row two">${siInput('Monthly New-Business Target ₹','si-target',v.target)}${siInput('New Business Collected ₹','si-newbiz',v.newBusiness,'this month')}</div>
+        <h4 style="margin:6px 0 8px;color:var(--brand);font-size:13px">Retainer Residual (2% below target · 3% at/above target)</h4>
         <div class="form-row two">
-          <div class="form-row" style="margin:0"><label>Client Retention Bonus</label><select id="si-retention" oninput="recalcSI()" onchange="recalcSI()" style="width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:7px"><option value="">None</option><option value="3"${v.retention==='3'?' selected':''}>3 months · ₹1,500</option><option value="6"${v.retention==='6'?' selected':''}>6 months · ₹2,500</option></select></div>
-          ${siInput('Bad-debt recovery ₹','si-baddebt',v.badDebt,'deduct')}
+          ${siInput('Retainer Book Value ₹','si-retbook',v.retainerBook,'total ongoing retainers')}
+          <div class="form-row" style="margin:0"><label>Retainers Collected?</label><select id="si-collected" oninput="recalcSI()" onchange="recalcSI()" style="width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:7px"><option value="yes"${v.retainersCollected!==false?' selected':''}>Yes — payment received</option><option value="no"${v.retainersCollected===false?' selected':''}>No — not yet collected</option></select></div>
         </div>
+        <h4 style="margin:6px 0 8px;color:var(--brand);font-size:13px">High-Ticket & Bonuses <span class="muted" style="font-weight:400;font-size:11px">(only at ≥100% target)</span></h4>
+        <div class="form-row two">${siInput('₹1L–2L deals total ₹','si-ht1',v.ht1,'+2%')}${siInput('₹2L+ deals total ₹','si-ht2',v.ht2,'+5%')}</div>
+        ${siInput('Verified Testimonials (count)','si-test',v.testimonials,'₹1,000 each · from 75%')}
+        <h4 style="margin:6px 0 8px;color:var(--brand);font-size:13px">Adjustments</h4>
+        ${siInput('Bad-debt deduction ₹','si-baddebt',v.badDebt,'deduct')}
         <div style="display:flex;gap:8px;margin-top:8px">
           <button class="btn btn-primary" onclick="saveIncentive()">${ed?'Update Record':'Save to History'}</button>
           ${ed?`<button class="btn" onclick="siEditId=null;navigate('salesincentive')">New Calc</button>`:''}
@@ -3380,46 +3594,45 @@ function siPane(){
       ${kpi('Paid Out',fmtMoney(paidAmt),'Cleared','✅','var(--green-soft)')}
       ${kpi('Sales Reps',[...new Set(rows.map(r=>r.emp))].length,'With records','👥','var(--blue-soft)')}
     </div>
-    <div class="card"><div class="table-wrap"><table><thead><tr><th>Rep</th><th>Month</th><th>Target</th><th>Revenue</th><th>Achievement</th><th>Incentive</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+    <div class="card"><div class="table-wrap"><table><thead><tr><th>Rep</th><th>Month</th><th>Target</th><th>New Business</th><th>Achievement</th><th>Incentive</th><th>Status</th><th>Actions</th></tr></thead><tbody>
     ${rows.map(r=>{const c=computeIncentive(r);
       return `<tr><td><div class="emp-cell">${empAvatar(r.emp)}<div class="nm">${empName(r.emp)}</div></div></td>
       <td>${new Date(r.month+'-01').toLocaleDateString('en-US',{month:'short',year:'numeric'})}</td>
-      <td>${fmtMoney(r.target)}</td><td>${fmtMoney(r.revenue)}</td>
-      <td>${badge(c.achievement+'%',c.achievement>=100?'b-green':c.achievement>=80?'b-amber':'b-red')}</td>
+      <td>${fmtMoney(r.target)}</td><td>${fmtMoney(r.newBusiness)}</td>
+      <td>${badge(c.achievement+'%',c.achievement>=100?'b-green':c.achievement>=75?'b-amber':'b-red')}</td>
       <td><b>${fmtMoney(c.total)}</b></td><td>${r.status==='Paid'?badge('✓ Paid','b-green'):badge('Pending','b-amber')}</td>
       <td style="white-space:nowrap"><button class="btn btn-sm" onclick="viewIncentive('${r.id}')">View</button> <button class="btn btn-sm" onclick="editIncentive('${r.id}')">Edit</button>${r.status!=='Paid'?` <button class="btn btn-sm btn-primary" onclick="markIncentivePaid('${r.id}')">Mark Paid</button>`:''} <button class="btn btn-sm btn-danger" onclick="deleteIncentive('${r.id}')">✕</button></td></tr>`;}).join('')
       ||'<tr><td colspan="8"><div class="empty-state"><div class="ico">💸</div>No incentive records yet</div></td></tr>'}
   </tbody></table></div></div>`;
 }
-function readSI(){ return {emp:val('si-emp'),month:val('si-month'),target:+val('si-target')||0,revenue:+val('si-revenue')||0,rate:+val('si-rate')||0,
-  newRev:+val('si-new')||0,ht1:+val('si-ht1')||0,ht2:+val('si-ht2')||0,testimonials:+val('si-test')||0,
-  retainer2nd:+val('si-ret2')||0,upsellSame:+val('si-upsell')||0,retainer3plus:+val('si-ret3')||0,retention:val('si-retention'),badDebt:+val('si-baddebt')||0}; }
+function readSI(){ return {emp:val('si-emp'),month:val('si-month'),target:+val('si-target')||0,newBusiness:+val('si-newbiz')||0,
+  retainerBook:+val('si-retbook')||0,retainersCollected:val('si-collected')!=='no',
+  ht1:+val('si-ht1')||0,ht2:+val('si-ht2')||0,testimonials:+val('si-test')||0,badDebt:+val('si-baddebt')||0}; }
 function incentiveBreakdownHTML(c,inp){
   const line=(l,v,sub,neg)=>`<div class="mini-stat"><span>${l}${sub?` <span class="muted" style="font-size:11px">${sub}</span>`:''}</span><b style="color:${neg?'var(--red)':'inherit'}">${neg?'−':'+'}${fmtMoney(Math.abs(v))}</b></div>`;
+  const bandLabel=c.belowFloor?'Below 75% — no payout':c.fullBand?'Target met (≥100%)':'75–99% band';
+  const bandColor=c.belowFloor?'b-red':c.fullBand?'b-green':'b-amber';
   return `<div class="card card-pad">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><h3>Incentive Breakdown</h3>${badge(c.achievement+'% of target',c.achievement>=100?'b-green':'b-amber')}</div>
-    <div class="mini-stat"><span class="muted">Target / Revenue</span><b>${fmtMoney(inp.target)} / ${fmtMoney(inp.revenue)}</b></div>
-    <div class="mini-stat"><span class="muted">New-client %</span><b>${c.newClientPct}% ${c.shortfall?badge('below 25%','b-amber'):badge('ok','b-green')}</b></div>
-    ${c.shortfallPenalty?`<div class="mini-stat"><span class="muted">Shortfall penalty (50% of ${fmtMoney(c.shortfall)})</span><b style="color:var(--red)">−${fmtMoney(c.shortfallPenalty)}</b></div>`:''}
-    ${c.halfCount?`<div class="mini-stat"><span class="muted">Retainer/upsell counted 50%</span><b style="color:var(--red)">−${fmtMoney(c.halfCount)}</b></div>`:''}
-    <div class="mini-stat"><span class="muted">Effective revenue for target</span><b>${fmtMoney(c.effRevenue)}</b></div>
-    <div class="mini-stat"><span class="muted">Over-target excess</span><b>${fmtMoney(c.excess)}</b></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><h3>Incentive Breakdown</h3>${badge(c.achievement+'% of target',bandColor)}</div>
+    <div class="mini-stat"><span class="muted">Target / New Business</span><b>${fmtMoney(inp.target)} / ${fmtMoney(inp.newBusiness)}</b></div>
+    <div class="mini-stat"><span class="muted">Achievement band</span><b>${badge(bandLabel,bandColor)}</b></div>
+    <div class="mini-stat"><span class="muted">Retainer book</span><b>${fmtMoney(inp.retainerBook)}${c.collected?'':' <span style="color:var(--amber)">· not collected</span>'}</b></div>
+    ${c.fullBand?`<div class="mini-stat"><span class="muted">Over-target excess</span><b>${fmtMoney(c.excess)}</b></div>`:''}
     <h4 style="margin:12px 0 4px;color:var(--brand)">Payout components</h4>
-    ${line('Base commission',c.base,inp.rate+'% of revenue')}
+    ${c.belowFloor?`<div class="mini-stat"><span class="muted">Below 75% of target</span><b style="color:var(--red)">Nothing payable</b></div>`:''}
+    ${c.retainerResidual?line('Retainer residual',c.retainerResidual,c.retainerRate+'% of book'):(!c.belowFloor&&!c.collected?`<div class="mini-stat"><span class="muted">Retainer residual (${c.retainerRate}%)</span><b class="muted">held — not collected</b></div>`:'')}
     ${c.over.amount?line('Over-target incentive',c.over.amount,c.over.rate+'% slab'):''}
-    ${c.htBonus?line('High-ticket bonus',c.htBonus,'+2% / +5%'):''}
+    ${c.highTicket?line('High-ticket bonus',c.highTicket,'+2% / +5%'):''}
     ${c.testimonial?line('Testimonial incentive',c.testimonial,(inp.testimonials)+' × ₹1,000'):''}
-    ${c.retainerOngoing?line('Retainer 1% (3rd mo+)',c.retainerOngoing,c.targetMet?'':'target not met'):''}
-    ${c.retention?line('Retention bonus',c.retention):''}
-    ${c.badDebt?line('Bad-debt recovery',c.badDebt,'§6.6',true):''}
+    ${c.badDebt?line('Bad-debt deduction',c.badDebt,'',true):''}
     <div class="mini-stat" style="border-top:2px solid var(--ink);margin-top:10px;padding-top:10px;font-size:17px"><span><b>Total Incentive Payable</b></span><b style="color:var(--green)">${fmtMoney(c.total)}</b></div>
-    <p class="muted" style="font-size:11px;margin-top:8px">Eligible only after client payment received (§6.1). Over-target slab applies the bracket rate to the full overachieved amount (§6.2).</p>
+    <p class="muted" style="font-size:11px;margin-top:8px">Below 75% of target pays nothing. Retainer residual is 2% of book from 75–99% and 3% at/above target, payable only once collected. Over-target incentive and high-ticket bonus apply only at ≥100%. Testimonials pay from 75% upward.</p>
   </div>`;
 }
 function recalcSI(){ const el=$('#si-result'); if(!el) return; const inp=readSI(); el.innerHTML=incentiveBreakdownHTML(computeIncentive(inp),inp); }
 function saveIncentive(){
   const inp=readSI();
-  if(!inp.target||!inp.revenue){toast('Enter target and revenue','err');return;}
+  if(!inp.target||!inp.newBusiness){toast('Enter target and new business collected','err');return;}
   if(siEditId){ const r=DB.salesIncentives.find(x=>x.id===siEditId); Object.assign(r,inp); log('Updated sales incentive',empName(r.emp)+' '+r.month); siEditId=null; }
   else { if(DB.salesIncentives.find(x=>x.emp===inp.emp&&x.month===inp.month)){toast('Record already exists for this rep & month — edit it instead','err');return;}
     DB.salesIncentives.push({id:uid('si'),...inp,status:'Pending',createdOn:today()}); log('Created sales incentive',empName(inp.emp)+' '+inp.month); }
