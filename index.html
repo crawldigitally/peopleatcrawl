@@ -722,6 +722,27 @@ function exportData(){
   log('Exported data backup',''); save();
   toast('Backup downloaded','ok');
 }
+/* Strip large embedded (data:) file contents anywhere in the DB — recovers a bloated
+   document that's too big to save to the cloud. Keeps file names; drops the heavy payload. */
+function stripInlineData(root){
+  let removed=0, freed=0;
+  const walk=o=>{ if(!o||typeof o!=='object') return;
+    for(const k in o){ const v=o[k];
+      if(typeof v==='string' && v.slice(0,5)==='data:' && v.length>50000){ freed+=v.length; o[k]=''; removed++; }
+      else if(v&&typeof v==='object') walk(v);
+    } };
+  walk(root); return {removed,freed};
+}
+function repairShrinkData(){
+  const before=(JSON.stringify(DB).length/1048576);
+  if(!confirm('This removes large embedded file contents that are bloating your data and blocking cloud saves.\n\nFile NAMES are kept, but you\'ll need to re-upload those files after setting up file storage (run schema.sql).\n\nCurrent size ~'+before.toFixed(1)+' MB. A backup download is recommended first. Continue?')) return;
+  const {removed,freed}=stripInlineData(DB);
+  save();
+  const after=(JSON.stringify(DB).length/1048576);
+  log('Shrank data (removed embedded files)',removed+' files, '+(freed/1048576).toFixed(1)+'MB freed');
+  toast(removed?('Removed '+removed+' embedded files · freed '+(freed/1048576).toFixed(1)+'MB · data now ~'+after.toFixed(1)+'MB. Saving should work now.'):'No large embedded files found. If saving still fails, check the browser console for the exact error.', removed?'ok':'err');
+  if(CURRENT_VIEW==='settings') navigate('settings');
+}
 function startFresh(){
   if(!confirm('Clear ALL demo/sample data?\n\nThis keeps YOUR account and your configuration (departments, KPI templates, leave types, payroll rules, holidays) but permanently removes all demo employees, payroll, candidates, leave, attendance, documents, assets, etc.\n\nThis cannot be undone. Have you taken a backup?')) return;
   if(!confirm('Final confirmation — permanently clear all demo data now?')) return;
@@ -865,8 +886,36 @@ async function cloudLogin(){
   if(error){ err.textContent=error.message; return; }
   err.textContent=''; await afterCloudAuth(data.user);
 }
+let _pushRetry=0;
 function cloudSave(){ if(!CLOUD||!_sb||!_cloudReady) return; clearTimeout(_pushTimer); _pushTimer=setTimeout(cloudPushNow,800); }
-async function cloudPushNow(){ if(!_sb) return; try{ const {error}=await _sb.from('app_data').upsert({id:'main',data:DB,updated_at:new Date().toISOString()}); if(error) throw error; }catch(e){ console.warn('Cloud save failed:',e.message||e); toast('Cloud save failed — check your connection, then try again','err'); } }
+async function cloudPushNow(){
+  if(!_sb) return;
+  try{
+    const {error}=await _sb.from('app_data').upsert({id:'main',data:DB,updated_at:new Date().toISOString()});
+    if(error) throw error;
+    _pushRetry=0;   // success
+  }catch(e){
+    const msg=((e&&(e.message||e.error_description))||e||'')+'';
+    const sizeMB=(JSON.stringify(DB).length/1048576).toFixed(1);
+    console.warn('Cloud save failed:',msg,'· document size ~'+sizeMB+'MB',e);
+    // Expired login → refresh the session token and retry once
+    if(/jwt|token|401|unauthor|expired|refresh/i.test(msg) && _pushRetry<1){
+      _pushRetry++; try{ await _sb.auth.refreshSession(); }catch(_){}
+      return cloudPushNow();
+    }
+    // Transient network blip → one automatic retry
+    if(/fetch|network|timeout|502|503|504|econn/i.test(msg) && _pushRetry<1){
+      _pushRetry++; setTimeout(cloudPushNow,1500); return;
+    }
+    _pushRetry=0;
+    // Oversized document (usually files stored inline because storage isn't set up)
+    if(+sizeMB>=3 || /payload|too large|413|body|size/i.test(msg)){
+      toast('Save failed — your data is too big ('+sizeMB+'MB), usually from uploaded files. Set up file storage (run schema.sql) so files are stored as links.','err');
+    } else {
+      toast('Cloud save failed: '+(msg.slice(0,90)||'unknown error')+' — check connection & retry','err');
+    }
+  }
+}
 
 /* ---------- Email notifications (cloud only: Supabase Edge Function → Resend) ----------
    Fires-and-forgets: an email failure never blocks or reverses the in-app action. */
@@ -2214,8 +2263,9 @@ function candidateForm(c={}){
    Cloud mode: upload to Supabase Storage ('uploads' bucket) and keep only the public URL —
    this fixes files vanishing on refresh (large data-URLs used to blow the storage quota) and
    keeps the shared document small. Demo mode (or on any storage error): inline data-URL fallback. */
-function inlineDataURL(f,cb){
-  if(f.size>2*1024*1024){ toast(f.name+' is over 2MB — connect cloud storage to keep large files; stored by name only for now','err'); cb({name:f.name,url:''}); return; }
+function inlineDataURL(f,cb,maxBytes){
+  const cap=maxBytes||2*1024*1024;
+  if(f.size>cap){ toast(f.name+' is too large to store here — set up file storage (run schema.sql). Saved by name only for now.','err'); cb({name:f.name,url:''}); return; }
   const r=new FileReader(); r.onload=()=>cb({name:f.name,url:r.result}); r.onerror=()=>cb({name:f.name,url:''}); r.readAsDataURL(f);
 }
 function uploadToStorage(f,cb){
@@ -2226,13 +2276,22 @@ function uploadToStorage(f,cb){
     toast('Uploading '+f.name+'…','ok');
     _sb.storage.from('uploads').upload(path,f,{contentType:f.type||'application/octet-stream',upsert:false})
       .then(res=>{
-        if(res&&res.error){ console.warn('Storage upload failed, storing inline:',res.error.message||res.error); inlineDataURL(f,cb); return; }
+        if(res&&res.error){
+          const m=((res.error.message)||res.error)+'';
+          console.warn('Storage upload failed:',m);
+          if(/bucket|not found|does not exist|404/i.test(m)){
+            // Storage not set up yet — do NOT inline a big file (it would bloat the shared doc and break saving)
+            toast('File storage isn\'t set up yet — run the updated schema.sql in Supabase (adds the "uploads" bucket). File saved by name only for now.','err');
+            cb({name:f.name,url:''}); return;
+          }
+          inlineDataURL(f,cb,256*1024); return;   // other errors: only inline very small files as a safety net
+        }
         const pub=_sb.storage.from('uploads').getPublicUrl(path);
         const url=pub&&pub.data&&pub.data.publicUrl?pub.data.publicUrl:'';
-        if(!url){ inlineDataURL(f,cb); return; }
+        if(!url){ inlineDataURL(f,cb,256*1024); return; }
         cb({name:f.name,url});
-      },err=>{ console.warn('Storage upload error, storing inline:',err&&(err.message||err)); inlineDataURL(f,cb); });
-  }catch(e){ console.warn('Storage upload threw, storing inline:',e&&(e.message||e)); inlineDataURL(f,cb); }
+      },err=>{ console.warn('Storage upload error:',err&&(err.message||err)); inlineDataURL(f,cb,256*1024); });
+  }catch(e){ console.warn('Storage upload threw:',e&&(e.message||e)); inlineDataURL(f,cb,256*1024); }
 }
 function readFileAsDataURL(input,cb){
   if(!input||!input.files||!input.files[0]){ cb(null); return; }
@@ -3438,6 +3497,9 @@ function settingsPane(){
     <div class="card card-pad" style="margin-top:16px"><h3 style="margin-bottom:8px;color:var(--red)">🧹 Start Fresh — clear demo data</h3>
       <p class="muted" style="font-size:13px;margin-bottom:12px">Removes ALL sample data (demo employees, payroll, candidates, leave, attendance, documents, etc.) so you can build with your real team. <b>Keeps your own account</b> and your configuration (departments, KPI templates, leave types, payroll rules, holidays). This cannot be undone — download a backup first.</p>
       <button class="btn btn-danger" onclick="startFresh()">Clear all demo data</button></div>
+    <div class="card card-pad" style="margin-top:16px"><h3 style="margin-bottom:8px">🩹 Fix cloud-save errors (shrink data)</h3>
+      <p class="muted" style="font-size:13px;margin-bottom:12px">If you see <b>"Cloud save failed"</b> after uploading files, your data has grown too big because file contents got embedded in it (this happens when file storage isn't set up yet). This removes those embedded file contents so saving works again — <b>file names are kept</b>, and you can re-upload the actual files after running the updated <code>schema.sql</code> in Supabase. Current data size: ~${sizeKB} KB.</p>
+      <button class="btn btn-primary" onclick="repairShrinkData()">Shrink data & fix saving</button></div>
     <div class="card card-pad" style="margin-top:16px;background:var(--amber-soft)"><b>⚠ Tip:</b> <span style="font-size:13px">Download a backup before clearing. In cloud mode your data is shared live with your whole team, so changes here affect everyone.</span></div>`;
   }
   if(setTab==='kpi'){
