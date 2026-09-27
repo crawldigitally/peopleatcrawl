@@ -698,6 +698,13 @@ function migrateLoaded(){
   if(!Array.isArray(DB.docTypes)||!DB.docTypes.length){ DB.docTypes=[...DOC_TYPES_DEFAULT]; changed=true; }
   if(!DB.payrollPolicy||typeof DB.payrollPolicy!=='object'){ DB.payrollPolicy={...DEFAULT_PAYROLL_POLICY}; changed=true; }
   else { Object.keys(DEFAULT_PAYROLL_POLICY).forEach(k=>{ if(DB.payrollPolicy[k]===undefined){ DB.payrollPolicy[k]=DEFAULT_PAYROLL_POLICY[k]; changed=true; } }); }
+  // Per-role access control — seed defaults / backfill missing roles & keys
+  if(!DB.rolePerms||typeof DB.rolePerms!=='object'){ DB.rolePerms=defaultRolePerms(); changed=true; }
+  else { const d=defaultRolePerms(); ROLE_LIST.forEach(r=>{
+    if(!DB.rolePerms[r]||typeof DB.rolePerms[r]!=='object'){ DB.rolePerms[r]=d[r]; changed=true; }
+    else { ['viewOthersSalary','viewOthersPersonal','editEmployees'].forEach(k=>{ if(DB.rolePerms[r][k]===undefined){ DB.rolePerms[r][k]=d[r][k]; changed=true; } });
+      if(!Array.isArray(DB.rolePerms[r].modules)){ DB.rolePerms[r].modules=d[r].modules; changed=true; } }
+  }); }
   // One-time upgrade to Crawl Digitally attendance rules (every late charged, half-day = ½ day, absent = full day).
   // Applied once; admins can still change any value afterwards in Payroll → Rules.
   if(DB.payrollPolicy && !DB.payrollPolicy.attendanceRulesV2){
@@ -800,9 +807,32 @@ const NAV = [
   {id:'analytics',label:'People Analytics',ic:'📈',roles:['Super Admin','HR Manager']},
   {id:'settings',label:'Settings',ic:'⚙️',roles:['Super Admin','HR Manager']}
 ];
-function canSee(item){ return item.roles==='all' || item.roles.includes(SESSION.role); }
+/* ---- Per-role access control (editable in Settings → Roles & Access) ---- */
+const ROLE_LIST=['Super Admin','HR Manager','Manager','Employee'];
+function defaultRolePerms(){
+  const modsFor=r=>NAV.filter(n=>n.id&&(n.roles==='all'||(Array.isArray(n.roles)&&n.roles.includes(r)))).map(n=>n.id);
+  return {
+    'Super Admin':{viewOthersSalary:true, viewOthersPersonal:true, editEmployees:true, modules:modsFor('Super Admin')},
+    'HR Manager': {viewOthersSalary:true, viewOthersPersonal:true, editEmployees:true, modules:modsFor('HR Manager')},
+    'Manager':    {viewOthersSalary:false,viewOthersPersonal:true, editEmployees:false,modules:modsFor('Manager')},
+    'Employee':   {viewOthersSalary:false,viewOthersPersonal:false,editEmployees:false,modules:modsFor('Employee')}
+  };
+}
+function rolePerms(){ if(!DB.rolePerms||typeof DB.rolePerms!=='object') DB.rolePerms=defaultRolePerms(); return DB.rolePerms; }
+function myPerms(){ return rolePerms()[SESSION.role] || {modules:[]}; }
+function canSee(item){
+  if(SESSION.role==='Super Admin') return true;                 // full access — never lock out the owner
+  if(item.id==='dashboard') return true;                        // everyone keeps a home screen
+  const p=myPerms();
+  if(p&&Array.isArray(p.modules)) return p.modules.includes(item.id);
+  return item.roles==='all' || (Array.isArray(item.roles)&&item.roles.includes(SESSION.role));
+}
 function isAdmin(){ return ['Super Admin','HR Manager'].includes(SESSION.role); }
 function isManager(){ return SESSION.role==='Manager'; }
+/* Privacy gates — who may see another person's salary / personal details / edit them. Own record always visible. */
+function canViewSalary(empId){ return empId===SESSION.empId || SESSION.role==='Super Admin' || !!myPerms().viewOthersSalary; }
+function canViewPersonal(empId){ return empId===SESSION.empId || SESSION.role==='Super Admin' || !!myPerms().viewOthersPersonal; }
+function canEditEmployees(){ return SESSION.role==='Super Admin' || !!myPerms().editEmployees; }
 /* employees a session can view: admins=all, manager=team, employee=self */
 function visibleEmployees(){
   if(isAdmin()) return DB.employees;
@@ -1134,7 +1164,8 @@ const roleCls=r=>r==='Super Admin'?'b-purple':r==='HR Manager'?'b-blue':r==='Man
 VIEWS.empdetail = () => {
   const e=DB.employees.find(x=>x.id===empDetailId);
   if(!e) return '<div class="empty-state">Employee not found</div>';
-  const canEdit=isAdmin();
+  const canEdit=canEditEmployees();
+  const showSalary=canViewSalary(e.id), showPersonal=canViewPersonal(e.id);
   const c=dcolorFor(e.dept);
   // quick metrics
   const bal=DB.leaveBalances.filter(b=>b.emp===e.id); const leaveLeft=bal.reduce((s,b)=>s+(b.allocated-b.used),0);
@@ -1145,7 +1176,10 @@ VIEWS.empdetail = () => {
   const cards=DB.kpiScorecards.filter(s=>s.emp===e.id); const kpiAvg=cards.length?Math.round(cards.reduce((s,sc)=>s+kpiTotals(sc).mgrPct,0)/cards.length):null;
   const pendReimb=DB.reimbursements.filter(r=>r.emp===e.id&&r.status==='Pending').length;
   const reports=DB.employees.filter(x=>x.manager===e.id&&x.status!=='Terminated');
-  const tabs=[['overview','Overview'],['comp','Compensation'],['leaveatt','Leave & Attendance'],['perf','Performance & KPI'],['docs','Documents'],['requests','Requests'],['learning','Learning'],['activity','Activity']];
+  let tabs=[['overview','Overview'],['comp','Compensation'],['leaveatt','Leave & Attendance'],['perf','Performance & KPI'],['docs','Documents'],['requests','Requests'],['learning','Learning'],['activity','Activity']];
+  if(e.id!==SESSION.empId && !showPersonal) tabs=tabs.filter(t=>t[0]==='overview'||t[0]==='comp'); // colleague w/o personal access: work info only
+  if(!showSalary) tabs=tabs.filter(t=>t[0]!=='comp');        // hide compensation from those without salary access
+  if(!tabs.find(t=>t[0]===empTab)) empTab='overview';
   return `<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px"><button class="btn btn-sm" onclick="navigate('employees')">← Back</button>
       <div class="muted" style="font-size:13px">Employees / <b>${esc(e.name)}</b></div></div>
     <div class="card" style="overflow:hidden;margin-bottom:18px">
@@ -1165,7 +1199,7 @@ VIEWS.empdetail = () => {
     <div class="kpis">
       ${kpi('Leave Balance',leaveLeft+' d','Across all types','🌴','var(--green-soft)')}
       ${kpi('Attendance',attPct==='—'?'—':attPct+'%','This month','⏱️','var(--blue-soft)')}
-      ${kpi('Latest Net Pay',latestNet!=null?fmtMoney(latestNet):'—',slips.length?new Date(slips[0].month+'-01').toLocaleDateString('en-US',{month:'short',year:'numeric'}):'No payslip','💰','var(--purple-soft)')}
+      ${kpi('Latest Net Pay',showSalary?(latestNet!=null?fmtMoney(latestNet):'—'):'🔒',showSalary?(slips.length?new Date(slips[0].month+'-01').toLocaleDateString('en-US',{month:'short',year:'numeric'}):'No payslip'):'Restricted','💰','var(--purple-soft)')}
       ${kpi('Avg KPI',kpiAvg!=null?kpiAvg+'%':'—',cards.length+' scorecards','⭐','var(--amber-soft)')}
       ${kpi('Direct Reports',reports.length,pendReimb?pendReimb+' reimb. pending':'—','👥','var(--brand-soft)')}
     </div>
@@ -1176,21 +1210,27 @@ AFTER.empdetail = () => { $('#page-title').textContent='Employee Profile'; };
 function miniRow(l,v){ return `<div class="mini-stat"><span class="muted">${l}</span><b>${v||'—'}</b></div>`; }
 function empDetailPane(e){
   if(empTab==='overview'){
+    const showPersonal=canViewPersonal(e.id);
     const docs=DB.documents.filter(d=>d.emp===e.id);
-    return `<div class="grid-2">
-      <div class="card card-pad"><h3 style="margin-bottom:10px">Personal</h3>
+    const personalCard = showPersonal
+      ? `<div class="card card-pad"><h3 style="margin-bottom:10px">Personal</h3>
         ${miniRow('Date of Birth',fmtDate(e.dob))}${miniRow('Gender',e.gender)}${miniRow('Phone',esc(e.phone))}
-        ${miniRow('Personal Email',esc(e.personalEmail))}${miniRow('Address',esc(e.address))}${miniRow('Emergency',esc(e.emergency))}</div>
+        ${miniRow('Personal Email',esc(e.personalEmail))}${miniRow('Address',esc(e.address))}${miniRow('Emergency',esc(e.emergency))}</div>`
+      : `<div class="card card-pad"><h3 style="margin-bottom:10px">Personal</h3>
+        <div class="mini-stat"><span class="muted">🔒 Private</span><b>Personal details are hidden</b></div>
+        <p class="muted" style="font-size:12px;margin-top:8px">Your access role can't view colleagues' personal information.</p></div>`;
+    return `<div class="grid-2">
+      ${personalCard}
       <div class="card card-pad"><h3 style="margin-bottom:10px">Work</h3>
         ${miniRow('Work Email',esc(e.email))}${miniRow('Department',deptName(e.dept))}${miniRow('Reporting Manager',e.manager?empName(e.manager):'—')}
         ${miniRow('Employment Type',esc(e.empType))}${miniRow('Start Date',fmtDate(e.startDate))}${miniRow('Location',esc(e.location))}
-        ${miniRow('Access Role',badge(e.role||'Employee',roleCls(e.role)))}${miniRow('KPI Position',e.kpiRole||'—')}
-        ${miniRow('Login Email',esc(e.email))}${miniRow('Account',e.accountActive===false?badge('Disabled','b-red'):badge('Active','b-green'))}</div>
+        ${miniRow('Access Role',badge(e.role||'Employee',roleCls(e.role)))}${miniRow('KPI Position',e.kpiRole||'—')}</div>
     </div>
-    <div class="card card-pad" style="margin-top:18px"><h3 style="margin-bottom:10px">📎 Documents (${docs.length})</h3>
-      ${docs.length?docs.map(d=>`<span class="badge-pill b-blue" style="margin:0 6px 6px 0;display:inline-block;cursor:pointer" onclick="viewDoc('${d.id}')">📄 ${esc(d.type)}</span>`).join(''):'<span class="muted">No documents on file</span>'}</div>`;
+    ${showPersonal?`<div class="card card-pad" style="margin-top:18px"><h3 style="margin-bottom:10px">📎 Documents (${docs.length})</h3>
+      ${docs.length?docs.map(d=>`<span class="badge-pill b-blue" style="margin:0 6px 6px 0;display:inline-block;cursor:pointer" onclick="viewDoc('${d.id}')">📄 ${esc(d.type)}</span>`).join(''):'<span class="muted">No documents on file</span>'}</div>`:''}`;
   }
   if(empTab==='comp'){
+    if(!canViewSalary(e.id)) return `<div class="card card-pad"><div class="empty-state"><div class="ico">🔒</div>Compensation is restricted for your access role.</div></div>`;
     const s=DB.salary.find(x=>x.emp===e.id)||{};
     const gross=(s.basic||0)+(s.hra||0)+(s.transport||0)+(s.special||0);
     const slips=DB.payslips.filter(p=>p.emp===e.id).slice().sort((a,b)=>b.month.localeCompare(a.month));
@@ -3456,7 +3496,7 @@ function decideProof(id,status){
    ========================================================================= */
 let setTab='depts'; let kpiBuilder=null;
 VIEWS.settings = () => {
-  const tabs=[['depts','Departments'],['kpi','KPI Positions'],['doctypes','Document Types'],['leavetypes','Leave Types'],['data','Backup & Data']];
+  const tabs=[['depts','Departments'],['roles','Roles & Access'],['kpi','KPI Positions'],['doctypes','Document Types'],['leavetypes','Leave Types'],['data','Backup & Data']];
   if(!tabs.find(t=>t[0]===setTab)) setTab='depts';
   return `<div class="section-head"><div><h2>Settings</h2><div class="desc">Org configuration — create departments, KPI positions, document & leave types</div></div></div>
     <div class="tabs">${tabs.map(t=>`<div class="tab${setTab===t[0]?' active':''}" onclick="kpiBuilder=null;setTab='${t[0]}';navigate('settings')">${t[1]}</div>`).join('')}</div>
@@ -3464,7 +3504,52 @@ VIEWS.settings = () => {
 };
 AFTER.settings=()=>{};
 function rerenderSettings(){ const c=$('#set-content'); if(c) c.innerHTML=settingsPane(); }
+function editRolePerms(role){
+  if(role==='Super Admin'){ toast('Super Admin always has full access','err'); return; }
+  const p=rolePerms(); const rp=p[role]||{modules:[]};
+  const sel=Array.isArray(rp.modules)?rp.modules:[];
+  const chk=(id,label,val)=>`<label style="display:flex;align-items:flex-start;gap:8px;margin-bottom:8px;cursor:pointer"><input type="checkbox" id="${id}" ${val?'checked':''} style="width:16px;height:16px;margin-top:2px"> <span>${label}</span></label>`;
+  const modBoxes=NAV.filter(n=>n.id).map(n=>`<label style="display:flex;align-items:center;gap:8px;padding:5px 8px;border:1px solid var(--line);border-radius:7px;cursor:pointer"><input type="checkbox" class="rp-mod" value="${n.id}" ${sel.includes(n.id)?'checked':''} style="width:15px;height:15px"> <span>${n.ic||''} ${esc(n.label)}</span></label>`).join('');
+  const body=`<div style="margin-bottom:10px">${badge('🔐 '+role,roleCls(role))}</div>
+    <h4 style="margin:6px 0 8px;color:var(--brand);font-size:13px">Data visibility</h4>
+    ${chk('rp-sal','Can view <b>other</b> employees&#39; salary &amp; payslips',rp.viewOthersSalary)}
+    ${chk('rp-per','Can view <b>other</b> employees&#39; personal details &amp; documents',rp.viewOthersPersonal)}
+    ${chk('rp-edit','Can edit employee profiles',rp.editEmployees)}
+    <p class="muted" style="font-size:11px;margin:2px 0 0">Everyone can always see their <b>own</b> salary and details.</p>
+    <h4 style="margin:14px 0 8px;color:var(--brand);font-size:13px">Sidebar modules this role can open</h4>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;max-height:260px;overflow:auto">${modBoxes}</div>
+    <p class="muted" style="font-size:11px;margin-top:8px">Dashboard stays available. Unchecking a module hides it from the sidebar and blocks that role from opening it.</p>`;
+  openModal('Edit Role — '+role, body, ()=>{
+    let modules=[...document.querySelectorAll('.rp-mod')].filter(c=>c.checked).map(c=>c.value);
+    if(!modules.includes('dashboard')) modules.unshift('dashboard');
+    if(SESSION.role===role && !modules.includes('settings')) modules.push('settings');   // prevent self-lockout
+    p[role]={ viewOthersSalary:$('#rp-sal').checked, viewOthersPersonal:$('#rp-per').checked, editEmployees:$('#rp-edit').checked, modules };
+    log('Updated role permissions',role); save();
+    if(SESSION.role===role) buildNav();
+    rerenderSettings(); toast(role+' permissions updated','ok');
+  },'Save Role');
+}
 function settingsPane(){
+  if(setTab==='roles'){
+    const p=rolePerms();
+    const yn=b=>b?badge('Yes','b-green'):badge('No','b-gray');
+    const modLabels=NAV.filter(n=>n.id).map(n=>n.id);
+    const card=r=>{ const rp=p[r]||{}; const locked=(r==='Super Admin');
+      const modCount=Array.isArray(rp.modules)?rp.modules.length:0;
+      return `<div class="card card-pad" style="margin-bottom:14px">
+        <div class="section-head" style="margin-bottom:10px"><div style="display:flex;align-items:center;gap:8px">${badge('🔐 '+r,roleCls(r))}${locked?'<span class="muted" style="font-size:12px">full access — cannot be locked out</span>':''}</div>
+          ${locked?'':`<button class="btn btn-primary btn-sm" onclick="editRolePerms('${r.replace(/'/g,"\\'")}')">✏ Edit</button>`}</div>
+        <div class="grid-2">
+          <div>${miniRow('View others&#39; salary', locked?yn(true):yn(!!rp.viewOthersSalary))}
+               ${miniRow('View others&#39; personal info', locked?yn(true):yn(!!rp.viewOthersPersonal))}
+               ${miniRow('Edit employee profiles', locked?yn(true):yn(!!rp.editEmployees))}</div>
+          <div>${miniRow('Modules visible', locked?(modLabels.length+' (all)'):(modCount+' of '+modLabels.length))}</div>
+        </div>
+      </div>`; };
+    return `<div class="section-head" style="margin-bottom:12px"><div class="muted" style="font-size:13px">Control what each access role can see and open. Applies live to everyone on that role.</div></div>
+      <div class="card card-pad" style="margin-bottom:16px;background:var(--amber-soft)"><b>How roles work:</b> <span style="font-size:13px">A person's role is set on their profile (Employees → Edit). Here you decide what each role can do — including whether they can see colleagues' salaries and personal details, and which sidebar modules they get.</span></div>
+      ${ROLE_LIST.map(card).join('')}`;
+  }
   if(setTab==='depts'){
     return `<div class="section-head" style="margin-bottom:12px"><div class="muted" style="font-size:13px">Departments used across the app.</div><button class="btn btn-primary btn-sm" onclick="addDept()">+ Add Department</button></div>
       <div class="card"><div class="table-wrap"><table><thead><tr><th>Department</th><th>Headcount</th><th>Actions</th></tr></thead><tbody>
